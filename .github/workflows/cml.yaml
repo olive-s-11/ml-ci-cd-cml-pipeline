@@ -1,44 +1,64 @@
-name: ML CI/CD Pipeline
+name: ML CI/CD
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   train-and-report:
     runs-on: ubuntu-latest
-
     steps:
-      # Step 1: Check out the repository
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Step 2: Set up Python
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.7"
+          python-version: "3.11"
+          cache: pip
 
-      # Step 3: Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Step 4: Run the training script
-      - name: Run training
-        run: |
-          python train.py
+      - name: Run tests
+        run: python -m pytest -q
 
-      # Step 5: Send a report using CML
-      - name: CML Report
+      - name: Train model
+        run: python train.py
+
+      - name: Upload model and metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts
+          path: artifacts/
+
+      - name: Set up CML
+        if: github.event_name == 'pull_request'
+        uses: iterative/setup-cml@v2
+
+      - name: Post CML report
+        if: github.event_name == 'pull_request'
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pip install cml
-          cml-publish model.joblib --md > report.md
-          cml-send-comment report.md
+          python - <<'EOF'
+          import json
+          m = json.load(open("artifacts/metrics.json"))
+          with open("report.md", "w") as f:
+              f.write("## Model training report\n\n")
+              f.write("| Metric | Value |\n|---|---|\n")
+              f.write(f"| MAE | {m['mae']:.2f} |\n")
+              f.write(f"| RMSE | {m['rmse']:.2f} |\n")
+              f.write(f"| R² | {m['r2']:.3f} |\n")
+              f.write(f"| Train / test rows | {m['n_train']} / {m['n_test']} |\n\n")
+              f.write("![Predicted vs actual](artifacts/pred_vs_actual.png)\n")
+          EOF
+          cml comment create --publish report.md
